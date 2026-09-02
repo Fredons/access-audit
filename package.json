@@ -1,0 +1,29 @@
+{
+  "name": "access-audit",
+  "version": "1.0.0",
+  "description": "Headless WCAG 2.1/2.2 AA scanner producing dated, hash-verified evidence records. Detects accessibility overlay widgets and re-scans with the widget blocked to report the delta.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Frederick Akam",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Fredons/access-audit.git"
+  },
+  "keywords": [
+    "accessibility",
+    "wcag",
+    "axe-core",
+    "playwright",
+    "a11y",
+    "ada",
+    "en-301-549"
+  ],
+  "scripts": {
+    "audit": "node audit.mjs",
+    "prospect": "node prospect.mjs"
+  },
+  "dependencies": {
+    "@axe-core/playwright": "^4.12.1",
+    "playwright": "^1.62.1"
+  }
+}
