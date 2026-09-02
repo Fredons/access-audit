@@ -35,6 +35,31 @@ That delta is the interesting number. Overlays repair the subset of failures aut
 node prospect.mjs domains.txt --concurrency 6
 ```
 
+## Credential exposure (`supabase-scan.mjs`)
+
+A second rule set over the same machine. It reads the JavaScript a page serves to every visitor and reports Supabase credentials that should never reach the browser.
+
+```bash
+node supabase-scan.mjs https://example.com https://example.com/app --name "Example Co"
+```
+
+**It reads and decodes. That is all it does.**
+
+A Supabase legacy key is a JWT: three base64url segments, unencrypted, carrying a `role` claim. The token declares its own privilege level, so a dangerous key can be told apart from a harmless one by decoding a string the site already publishes, with no request to the project's API and no authentication attempt.
+
+- An `anon` key in client code is intended and is not a finding.
+- A `service_role` key in client code is critical. It bypasses Row Level Security entirely, so anyone who reads the page source has full read and write access to every table regardless of what the RLS policies say.
+
+The newer `sb_secret_` and `sb_publishable_` formats are classified on their prefix. Anthropic, OpenAI, AWS, Stripe secret keys and private key blocks are reported too. Credentials are redacted in the report: enough to identify, never enough to use.
+
+**This tool never connects to any database, never sends a discovered key anywhere, and never tests whether a key works.** Decoding a credential a site publishes is observation. Using it is unauthorised access, however carelessly it was exposed. That boundary is the reason this scanner is safe to run, and any change to it changes the legality of running it.
+
+### One thing it deliberately does not call critical
+
+Google browser keys (`AIza…`) cannot function unless they ship to the client. Secrecy was never the control for them; HTTP referrer and API restrictions are. They are reported as advisory, with the check that actually applies, because a scanner that cries critical over a key that is meant to be public discredits every real finding in the same report.
+
+The first run of this tool against its author's own sites flagged exactly that false positive. The calibration above is the fix.
+
 ## The manual protocol
 
 [`MANUAL-PROTOCOL.md`](MANUAL-PROTOCOL.md) is the part the scanner cannot do: keyboard-only testing with the mouse physically unplugged, NVDA screen reader passes, deliberately breaking checkout forms to see whether errors are announced, zoom and reflow, target sizes. Six blocks, each check mapped to its success criterion.
