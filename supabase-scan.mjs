@@ -115,28 +115,48 @@ async function scanPage(browser, url) {
   // Every script the site serves. This is the same content any visitor's browser receives.
   const sources = new Map();
 
-  page.on('response', async (res) => {
-    try {
-      const type = res.request().resourceType();
-      if (type !== 'script' && type !== 'document' && type !== 'fetch' && type !== 'xhr') return;
-      const ct = (res.headers()['content-type'] || '').toLowerCase();
-      if (!/javascript|json|html|text/.test(ct)) return;
-      const body = await res.text();
-      if (body && body.length < 8_000_000) sources.set(res.url(), body);
-    } catch {
-      // Response body unavailable (redirect, cached, aborted). Nothing to read.
-    }
+  // Reading a response body is asynchronous, and the event handler is not awaited by
+  // Playwright. Every read must therefore be tracked and settled before the context
+  // closes, or closing aborts the reads still in flight and the scan silently inspects
+  // fewer sources than the page actually served.
+  //
+  // This is not hypothetical. Scanning seven sites in one run captured 3 to 12 sources
+  // per site where scanning the same sites individually captured 17 to 28, and a known
+  // exposed key stopped being reported. A scanner that under-reports is worse than no
+  // scanner, because it produces a clean result that is trusted.
+  const pending = [];
+
+  page.on('response', (res) => {
+    pending.push(
+      (async () => {
+        try {
+          const type = res.request().resourceType();
+          if (type !== 'script' && type !== 'document' && type !== 'fetch' && type !== 'xhr') return;
+          const ct = (res.headers()['content-type'] || '').toLowerCase();
+          if (!/javascript|json|html|text/.test(ct)) return;
+          const body = await res.text();
+          if (body && body.length < 8_000_000) sources.set(res.url(), body);
+        } catch {
+          // Response body unavailable (redirect, cached, aborted). Nothing to read.
+        }
+      })()
+    );
   });
 
   let loadError = null;
   try {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
     await page.waitForTimeout(4000);
+    // Settle in-flight body reads, and give late-arriving chunks a chance to land.
+    await Promise.allSettled(pending);
+    await page.waitForTimeout(1500);
+    await Promise.allSettled(pending);
   } catch (e) {
     loadError = e.message.split('\n')[0];
   }
 
   if (loadError) {
+    await Promise.allSettled(pending);
     await context.close();
     return { url, error: loadError };
   }
@@ -146,6 +166,48 @@ async function scanPage(browser, url) {
     sources.set(url + ' (rendered DOM)', await page.content());
   } catch {
     // Page closed or navigated. The network-captured sources still stand.
+  }
+
+  await Promise.allSettled(pending);
+
+  // Listening to responses is inherently timing-dependent: a chunk that loads late, is
+  // served from cache, or arrives after the wait window is simply never seen. On one
+  // Next.js site this captured 2 of the 10 scripts the HTML references, and missed a
+  // known exposed key sitting in one of the other 8.
+  //
+  // So do not rely on the listener alone. Enumerate every script the document actually
+  // references and fetch anything not already captured. This makes the source set a
+  // function of what the page declares rather than of how fast the network was, which
+  // is the only basis on which a "no findings" result can be trusted.
+  let declared = [];
+  try {
+    declared = await page.evaluate(() =>
+      Array.from(
+        document.querySelectorAll(
+          'script[src], link[rel="preload"][as="script"][href], link[rel="modulepreload"][href]'
+        )
+      )
+        .map((el) => el.src || el.href)
+        .filter((u) => u && u.startsWith('http'))
+    );
+  } catch {
+    // Page gone. Whatever the listener caught still stands.
+  }
+
+  let fetched = 0;
+  for (const src of new Set(declared)) {
+    if (sources.has(src)) continue;
+    try {
+      const res = await context.request.get(src, { timeout: 20000 });
+      if (!res.ok()) continue;
+      const body = await res.text();
+      if (body && body.length < 8_000_000) {
+        sources.set(src, body);
+        fetched++;
+      }
+    } catch {
+      // Unreachable or non-text. Recorded as a gap by omission, not as a clean result.
+    }
   }
 
   await context.close();
@@ -192,6 +254,8 @@ async function scanPage(browser, url) {
     url,
     title,
     sourcesInspected: sources.size,
+    scriptsDeclared: new Set(declared).size,
+    scriptsFetchedDirectly: fetched,
     supabaseProjects: [...projects],
     findings,
     counts: {

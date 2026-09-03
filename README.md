@@ -54,6 +54,16 @@ The newer `sb_secret_` and `sb_publishable_` formats are classified on their pre
 
 **This tool never connects to any database, never sends a discovered key anywhere, and never tests whether a key works.** Decoding a credential a site publishes is observation. Using it is unauthorised access, however carelessly it was exposed. That boundary is the reason this scanner is safe to run, and any change to it changes the legality of running it.
 
+### Why it fetches scripts twice
+
+Two passes collect the page's JavaScript, and both are needed.
+
+The first listens to network responses. That is how a real browser sees the page, but it is timing-dependent: a chunk that loads late, arrives from cache, or lands after the wait window is never seen. The second enumerates every `script[src]`, `link[rel=preload][as=script]` and `link[rel=modulepreload]` the document declares, and fetches anything the listener missed.
+
+The second pass exists because the first one is not trustworthy on its own. Scanning seven sites in one run captured 3 to 12 sources each where scanning them individually captured 17 to 28, and a known exposed key stopped being reported. On one Next.js site the listener saw 2 of the 10 scripts the HTML references, and the key was in one of the other 8.
+
+That failure mode is the dangerous one. A false positive wastes someone's afternoon; a false negative hands them a clean report on an exposed database. So every report carries `scriptsDeclared` and `scriptsFetchedDirectly` alongside `sourcesInspected`, and a run where `sourcesInspected` is not comfortably above `scriptsDeclared` should be treated as incomplete rather than clean.
+
 ### One thing it deliberately does not call critical
 
 Google browser keys (`AIza…`) cannot function unless they ship to the client. Secrecy was never the control for them; HTTP referrer and API restrictions are. They are reported as advisory, with the check that actually applies, because a scanner that cries critical over a key that is meant to be public discredits every real finding in the same report.
